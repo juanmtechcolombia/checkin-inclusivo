@@ -1,0 +1,201 @@
+// ─────────────────────────────────────────────────────────────
+// Check-in Inclusivo — Prisma Schema
+// Base de datos PostgreSQL con bóveda separada para datos sensibles
+// ─────────────────────────────────────────────────────────────
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Hotel ─────────────────────────────────────────────────
+
+model Hotel {
+  id           String        @id @default(uuid())
+  name         String
+  address      String
+  city         String
+  country      String        @default("Colombia")
+  config       HotelConfig?
+  reservations Reservation[]
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+}
+
+model HotelConfig {
+  id                  String   @id @default(uuid())
+  hotelId             String   @unique
+  hotel               Hotel    @relation(fields: [hotelId], references: [id])
+  quietLobbyEnabled   Boolean  @default(false)
+  /// JSON: TimeWindow[] — franjas horarias disponibles
+  availableTimeWindows Json     @default("[]")
+  /// JSON: ConsentTextDto[] — textos de consentimiento versionados
+  consentTexts        Json     @default("[]")
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}
+
+// ─── Guest ─────────────────────────────────────────────────
+
+model Guest {
+  id                       String          @id @default(uuid())
+  firstName                String
+  lastName                 String
+  email                    String          @unique
+  phone                    String?
+  preferredLanguage        String          @default("es")
+  /// JSON: AccessibilityPreferences
+  accessibilityPreferences Json            @default("{}")
+  reservations             Reservation[]
+  consents                 Consent[]
+  sensitiveData            SensitiveData[]
+  createdAt                DateTime        @default(now())
+  updatedAt                DateTime        @updatedAt
+}
+
+// ─── Reservation ───────────────────────────────────────────
+
+model Reservation {
+  id           String    @id @default(uuid())
+  bookingCode  String    @unique
+  guestId      String
+  guest        Guest     @relation(fields: [guestId], references: [id])
+  hotelId      String
+  hotel        Hotel     @relation(fields: [hotelId], references: [id])
+  checkInDate  DateTime
+  checkOutDate DateTime
+  roomNumber   String?
+  status       String    @default("CONFIRMED")
+  pmsSource    String    @default("MOCK_OHIP")
+  checkIn      CheckIn?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([guestId])
+  @@index([hotelId])
+  @@index([checkInDate])
+}
+
+// ─── Check-In (Máquina de Estados) ─────────────────────────
+
+model CheckIn {
+  id                String      @id @default(uuid())
+  reservationId     String      @unique
+  reservation       Reservation @relation(fields: [reservationId], references: [id])
+  status            String      @default("INVITADO")
+  /// JSON: TimeWindow seleccionada
+  selectedTimeWindow Json?
+  // Timestamps por paso
+  invitedAt         DateTime    @default(now())
+  dataValidatedAt   DateTime?
+  windowSelectedAt  DateTime?
+  authenticatedAt   DateTime?
+  keyIssuedAt       DateTime?
+  completedAt       DateTime?
+  digitalKey        DigitalKey?
+  authChallenges    AuthChallenge[]
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+}
+
+// ─── Consent ───────────────────────────────────────────────
+
+model Consent {
+  id        String   @id @default(uuid())
+  guestId   String
+  guest     Guest    @relation(fields: [guestId], references: [id])
+  version   String
+  accepted  Boolean
+  /// JSON: ConsentScope[]
+  scope     Json     @default("[]")
+  timestamp DateTime @default(now())
+
+  @@index([guestId])
+}
+
+// ─── Digital Key ───────────────────────────────────────────
+
+model DigitalKey {
+  id         String   @id @default(uuid())
+  checkInId  String   @unique
+  checkIn    CheckIn  @relation(fields: [checkInId], references: [id])
+  /// Mock credential (simulated lock credential)
+  credential String
+  validFrom  DateTime
+  validUntil DateTime
+  status     String   @default("ISSUED")
+  roomNumber String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+// ─── Auth Challenge ────────────────────────────────────────
+
+model AuthChallenge {
+  id         String   @id @default(uuid())
+  checkInId  String
+  checkIn    CheckIn  @relation(fields: [checkInId], references: [id])
+  type       String   // QR | OTP
+  /// Hashed value (never stored in plain text)
+  valueHash  String
+  expiresAt  DateTime
+  attempts   Int      @default(0)
+  maxAttempts Int     @default(3)
+  used       Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  @@index([checkInId])
+}
+
+// ─── Sensitive Data Vault (Bóveda) ─────────────────────────
+// Datos sensibles cifrados a nivel de campo (Ley 1581 de 2012)
+
+model SensitiveData {
+  id             String   @id @default(uuid())
+  guestId        String
+  guest          Guest    @relation(fields: [guestId], references: [id])
+  /// Tipo de dato sensible
+  dataType       String
+  /// Valor cifrado a nivel de campo
+  encryptedValue String
+  /// IV para descifrado
+  encryptionIv   String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([guestId])
+  @@index([dataType])
+}
+
+// ─── Audit Event Log ───────────────────────────────────────
+
+model AuditEvent {
+  id        String   @id @default(uuid())
+  type      String
+  actorId   String
+  actorRole String
+  details   String
+  metadata  Json?
+  timestamp DateTime @default(now())
+
+  @@index([type])
+  @@index([actorId])
+  @@index([timestamp])
+}
+
+// ─── Staff Users (Panel Hotelero) ──────────────────────────
+
+model StaffUser {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  role         String   @default("STAFF")
+  hotelId      String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
